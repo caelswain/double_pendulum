@@ -1,3 +1,14 @@
+struct Uniform {
+    resolution: vec2<f32>, // 屏幕像素尺寸，例如 (width, height)
+};
+
+struct Quad {
+    pos_px: vec2<f32>,     // 中心
+    size_px: vec2<f32>,    // 宽高（像素）
+    radius_px: f32,        // 圆角半径（像素）
+    color: vec4<f32>,
+};
+
 struct VsOut {
     @builtin(position) position: vec4<f32>,
 };

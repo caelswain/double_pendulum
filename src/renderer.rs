@@ -1,25 +1,22 @@
 use std::sync::Arc;
 
 use wgpu::{
-    Backends, CommandEncoder, CurrentSurfaceTexture, Device, Instance, InstanceDescriptor,
-    PipelineCompilationOptions, Queue, RequestAdapterOptions, RenderPipeline,
-    ShaderModuleDescriptor, ShaderSource,
+    Backends, BindGroup, BindGroupLayout, CommandEncoder, CurrentSurfaceTexture, Device, Instance, InstanceDescriptor, PipelineCompilationOptions, Queue, RenderPipeline, RequestAdapterOptions, ShaderModuleDescriptor, ShaderSource, util::DeviceExt
 };
-use winit::window::Window;
+use winit::{dpi::PhysicalSize, window::Window};
 
 pub(crate) struct Renderer {
     wgpu: WgpuContext,
     pipeline: RenderPipeline,
+    uniform_buffer: wgpu::Buffer,
+    bind_group: BindGroup,
 }
 
 impl Renderer {
     pub(crate) fn new(window: Arc<Window>) -> Self {
         let wgpu = WgpuContext::new(window);
-        let pipeline = create_blue_square_pipeline(&wgpu.device, &wgpu.config);
-        Self {
-            wgpu,
-            pipeline,
-        }
+        let (pipeline, uniform_buffer, bind_group) = create_pipeline(&wgpu.device, &wgpu.config);
+        Self { wgpu, pipeline, uniform_buffer, bind_group }
     }
 
     pub(crate) fn render<F>(&mut self, render_fn: F)
@@ -72,15 +69,45 @@ impl Renderer {
                 multiview_mask: None,
             });
 
-            render_pass.set_pipeline(&self.pipeline);
-            render_pass.draw(0..6, 0..1);
-        }
+            let instances = vec![
+                QuadInstance {
+                    pos_px: [100.0, 100.0],
+                    size_px: [200.0, 200.0],
+                    radius_px: 8.0,
+                    color: [1.0, 0.7, 0.15, 1.0],
+                },
+                QuadInstance {
+                    pos_px: [320.0, 340.0],
+                    size_px: [60.0, 60.0],
+                    radius_px: 12.0,
+                    color: [0.0, 1.0, 0.0, 1.0],
+                },
+            ];
 
-        render_fn(&mut encoder);
+            let instance_buffer = ws.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Instance Buffer"),
+                contents: bytemuck::cast_slice(&instances),
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            });
+
+            render_pass.set_pipeline(&self.pipeline);
+            render_pass.set_bind_group(0, &self.bind_group, &[]);
+            render_pass.set_vertex_buffer(0, instance_buffer.slice(..));
+            render_pass.draw(0..6, 0..2);
+        }
 
         // 4：提交并申请重绘
         ws.queue.submit(std::iter::once(encoder.finish()));
         surface_texture.present();
+    }
+
+    pub fn resize(&mut self, size: PhysicalSize<u32>) {
+        let wgpu = &mut self.wgpu;
+        wgpu.config.width = size.width;
+        wgpu.config.height = size.height;
+        wgpu.surface.configure(&wgpu.device, &wgpu.config);
+        let uniform = ViewUniform::new(size.width as f32, size.height as f32);
+        wgpu.queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniform));
     }
 }
 
@@ -144,29 +171,63 @@ impl WgpuContext {
     }
 }
 
-fn create_blue_square_pipeline(
+fn create_pipeline(
     device: &Device,
     config: &wgpu::SurfaceConfiguration,
-) -> RenderPipeline {
+) -> (RenderPipeline, wgpu::Buffer, BindGroup) {
     let shader = device.create_shader_module(ShaderModuleDescriptor {
         label: Some("Blue Square Shader"),
-        source: ShaderSource::Wgsl(include_str!("blue_square.wgsl").into()),
+        source: ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
+    });
+
+    let view_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("View BGL"),
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        }],
+    });
+
+    let view_uniform = ViewUniform {
+        resolution: [config.width as f32, config.height as f32],
+        _pad: [0.0, 0.0],
+    };
+
+    let view_ubo = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("View UBO"),
+        contents: bytemuck::bytes_of(&view_uniform),
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+    });
+
+    let view_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("View BG"),
+        layout: &view_bgl,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: view_ubo.as_entire_binding(),
+        }],
     });
 
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("Blue Square Pipeline Layout"),
-        bind_group_layouts: &[],
+        bind_group_layouts: &[Some(&view_bgl)],
         immediate_size: 0,
     });
 
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("Blue Square Pipeline"),
         layout: Some(&pipeline_layout),
         vertex: wgpu::VertexState {
             module: &shader,
             entry_point: Some("vs_main"),
             compilation_options: PipelineCompilationOptions::default(),
-            buffers: &[],
+            buffers: &[QuadInstance::layout()],
         },
         fragment: Some(wgpu::FragmentState {
             module: &shader,
@@ -191,5 +252,73 @@ fn create_blue_square_pipeline(
         multisample: wgpu::MultisampleState::default(),
         multiview_mask: None,
         cache: None,
-    })
+    });
+
+    (
+        pipeline,
+        view_ubo,
+        view_bg
+    )
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct ViewUniform {
+    resolution: [f32; 2], // 屏幕像素尺寸，例如 (width, height)
+    _pad: [f32; 2],
+}
+
+impl ViewUniform {
+    fn new(width: f32, height: f32) -> Self {
+        Self { resolution: [width, height], _pad: [0.0, 0.0] }
+    }
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct QuadInstance {
+    pos_px: [f32; 2],  // 中心
+    size_px: [f32; 2], // 宽高（像素）
+    radius_px: f32,    // 圆角半径（像素）
+    color: [f32; 4],
+}
+
+impl QuadInstance {
+    pub fn layout() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<QuadInstance>() as u64,
+
+            step_mode: wgpu::VertexStepMode::Instance,
+
+            attributes: &[
+                // position
+                wgpu::VertexAttribute {
+                    offset: 0,
+                    shader_location: 2,
+                    format: wgpu::VertexFormat::Float32x2,
+                },
+
+                // size
+                wgpu::VertexAttribute {
+                    offset: 8,
+                    shader_location: 3,
+                    format: wgpu::VertexFormat::Float32x2,
+                },
+
+                // radius
+                wgpu::VertexAttribute {
+                    offset: 16,
+                    shader_location: 4,
+                    format: wgpu::VertexFormat::Float32,
+                },
+
+                // color
+                wgpu::VertexAttribute {
+                    offset: 20,
+                    shader_location: 5,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+            ],
+        }
+    }
 }
