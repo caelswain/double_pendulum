@@ -6,13 +6,6 @@ struct ViewUniforms {
 @group(0) @binding(0)
 var<uniform> view_uniforms: ViewUniforms;
 
-struct Quad {
-    pos_px: vec2<f32>,     // 中心
-    size_px: vec2<f32>,    // 宽高（像素）
-    radius_px: f32,        // 圆角半径（像素）
-    color: vec4<f32>,
-};
-
 const POSITIONS: array<vec2<f32>, 6> = array<vec2<f32>, 6>(
     vec2<f32>(-0.5, -0.5),
     vec2<f32>( 0.5, -0.5),
@@ -27,33 +20,66 @@ struct VertexInput {
 };
 
 struct InstanceInput {
-    @location(2) position: vec2<f32>,
-    @location(3) size: vec2<f32>,
-    @location(4) radius: f32,
-    @location(5) color: vec4<f32>,
+    @location(0) position: vec2<f32>,
+    @location(1) size: vec2<f32>,
+    @location(2) radius: f32,
+    @location(3) angle: f32,
+    @location(4) color: vec4<f32>,
 };
 
 struct VsOut {
     @builtin(position) position: vec4<f32>,
-    @location(2) color: vec4<f32>,
+    @location(0) local_pos: vec2<f32>,
+    @location(1) size: vec2<f32>,
+    @location(2) radius: f32,
+    @location(3) color: vec4<f32>,
 };
 
 @vertex
-fn vs_main(@builtin(vertex_index) vertex_index: u32,@location(2) position: vec2<f32>,@location(3) size: vec2<f32>,@location(4) radius: f32,
-    @location(5) color: vec4<f32>,) -> VsOut {
+fn vs_main(@builtin(vertex_index) vertex_index: u32,@location(0) position: vec2<f32>,@location(1) size: vec2<f32>, @location(2) radius: f32, @location(3) angle: f32,
+    @location(4) color: vec4<f32>,) -> VsOut {
 
     var out: VsOut;
-    var x: f32;
-    var y: f32;
-    x = (position.x + size.x * POSITIONS[vertex_index].x) * 2 / view_uniforms.resolution.x -1.0;
-    y = (position.y + size.y * POSITIONS[vertex_index].y) * 2 / view_uniforms.resolution.y -1.0;
-    out.position = vec4<f32>(x, y, 0.0, 1.0);
+
+    let rotated = rotate2d(size * POSITIONS[vertex_index], angle);
+    let pos = (rotated + position) / (view_uniforms.resolution / 2.0) - 1;
+    out.position = vec4<f32>(pos, 0.0, 1.0);
+    let local = size * POSITIONS[vertex_index];
+    out.local_pos = local;
+    out.size = size;
+    out.radius = radius;
     out.color = color;
     return out;
 }
 
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
-    let uv = in.position.xy / view_uniforms.resolution;
-    return vec4<f32>(in.color.rgb * vec3<f32>(uv.x, uv.y, 1.0), in.color.a);
+    let d = sdf(in.local_pos, in.size, in.radius);
+    var color: vec4<f32>;
+    if (d > 0.0) {
+        discard;
+    } else {
+        color = in.color;
+    }
+    return color;
+}
+
+fn sdf(
+    local_pos: vec2<f32>,   // px表示的相对坐标
+    size: vec2<f32>,        // px表示的宽高
+    radiux_px: f32,         // px表示的圆角半径
+) -> f32 {
+    let zero = vec2<f32>(0.0, 0.0);
+    let q = abs(local_pos) - (size / 2.0 - vec2<f32>(radiux_px, radiux_px));
+    let d = distance(max(q, zero), zero) + min(max(q.x, q.y), 0) - radiux_px;
+    return d;
+}
+
+fn rotate2d(p: vec2<f32>, angle: f32) -> vec2<f32> {
+    let c = cos(angle);
+    let s = sin(angle);
+    return vec2<f32>(
+        p.x * c - p.y * s,
+        p.x * s + p.y * c,
+    );
 }

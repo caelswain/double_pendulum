@@ -5,24 +5,23 @@ use wgpu::{
 };
 use winit::{dpi::PhysicalSize, window::Window};
 
+
 pub(crate) struct Renderer {
     wgpu: WgpuContext,
     pipeline: RenderPipeline,
     uniform_buffer: wgpu::Buffer,
     bind_group: BindGroup,
+    instances_buffer: wgpu::Buffer,
 }
 
 impl Renderer {
     pub(crate) fn new(window: Arc<Window>) -> Self {
         let wgpu = WgpuContext::new(window);
-        let (pipeline, uniform_buffer, bind_group) = create_pipeline(&wgpu.device, &wgpu.config);
-        Self { wgpu, pipeline, uniform_buffer, bind_group }
+        let (pipeline, uniform_buffer, bind_group, instances_buffer) = create_pipeline(&wgpu.device, &wgpu.config);
+        Self { wgpu, pipeline, uniform_buffer, bind_group, instances_buffer }
     }
 
-    pub(crate) fn render<F>(&mut self, render_fn: F)
-    where
-        F: FnOnce(&mut CommandEncoder),
-    {
+    pub(crate) fn render(&mut self, instances: &[QuadInstance]) {
         let ws = &self.wgpu;
 
         // 1. 获取下一帧纹理
@@ -69,31 +68,12 @@ impl Renderer {
                 multiview_mask: None,
             });
 
-            let instances = vec![
-                QuadInstance {
-                    pos_px: [100.0, 100.0],
-                    size_px: [200.0, 200.0],
-                    radius_px: 8.0,
-                    color: [1.0, 0.7, 0.15, 1.0],
-                },
-                QuadInstance {
-                    pos_px: [320.0, 340.0],
-                    size_px: [60.0, 60.0],
-                    radius_px: 12.0,
-                    color: [0.0, 1.0, 0.0, 1.0],
-                },
-            ];
-
-            let instance_buffer = ws.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Instance Buffer"),
-                contents: bytemuck::cast_slice(&instances),
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            });
 
             render_pass.set_pipeline(&self.pipeline);
             render_pass.set_bind_group(0, &self.bind_group, &[]);
-            render_pass.set_vertex_buffer(0, instance_buffer.slice(..));
-            render_pass.draw(0..6, 0..2);
+            ws.queue.write_buffer(&self.instances_buffer, 0, bytemuck::cast_slice(instances));
+            render_pass.set_vertex_buffer(0, self.instances_buffer.slice(..));
+            render_pass.draw(0..6, 0..(instances.len() as u32));
         }
 
         // 4：提交并申请重绘
@@ -174,7 +154,7 @@ impl WgpuContext {
 fn create_pipeline(
     device: &Device,
     config: &wgpu::SurfaceConfiguration,
-) -> (RenderPipeline, wgpu::Buffer, BindGroup) {
+) -> (RenderPipeline, wgpu::Buffer, BindGroup, wgpu::Buffer) {
     let shader = device.create_shader_module(ShaderModuleDescriptor {
         label: Some("Blue Square Shader"),
         source: ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
@@ -254,10 +234,18 @@ fn create_pipeline(
         cache: None,
     });
 
+    let instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("Instance Buffer"),
+        size: 1000 * size_of::<QuadInstance>() as u64,
+        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+
     (
         pipeline,
         view_ubo,
-        view_bg
+        view_bg,
+        instance_buffer,
     )
 }
 
@@ -276,10 +264,11 @@ impl ViewUniform {
 
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-struct QuadInstance {
+pub struct QuadInstance {
     pos_px: [f32; 2],  // 中心
     size_px: [f32; 2], // 宽高（像素）
     radius_px: f32,    // 圆角半径（像素）
+    angle: f32,
     color: [f32; 4],
 }
 
@@ -294,31 +283,48 @@ impl QuadInstance {
                 // position
                 wgpu::VertexAttribute {
                     offset: 0,
-                    shader_location: 2,
+                    shader_location: 0,
                     format: wgpu::VertexFormat::Float32x2,
                 },
 
                 // size
                 wgpu::VertexAttribute {
                     offset: 8,
-                    shader_location: 3,
+                    shader_location: 1,
                     format: wgpu::VertexFormat::Float32x2,
                 },
 
                 // radius
                 wgpu::VertexAttribute {
                     offset: 16,
-                    shader_location: 4,
+                    shader_location: 2,
+                    format: wgpu::VertexFormat::Float32,
+                },
+
+                // angle
+                wgpu::VertexAttribute {
+                    offset: 20,
+                    shader_location: 3,
                     format: wgpu::VertexFormat::Float32,
                 },
 
                 // color
                 wgpu::VertexAttribute {
-                    offset: 20,
-                    shader_location: 5,
+                    offset: 24,
+                    shader_location: 4,
                     format: wgpu::VertexFormat::Float32x4,
                 },
             ],
+        }
+    }
+
+    pub fn new(position: [f32; 2],  size: [f32; 2], radius: f32, angle: f32, color: [f32; 4]) -> Self {
+        Self {
+            pos_px: position,  // 中心
+            size_px: size, // 宽高（像素）
+            radius_px: radius,    // 圆角半径（像素）
+            angle,
+            color,
         }
     }
 }
