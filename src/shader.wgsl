@@ -15,9 +15,6 @@ const POSITIONS: array<vec2<f32>, 6> = array<vec2<f32>, 6>(
     vec2<f32>(-0.5,  0.5),
 );
 
-struct VertexInput {
-    @location(0) local_pos: vec2<f32>,
-};
 
 struct InstanceInput {
     @location(0) position: vec2<f32>,
@@ -36,19 +33,18 @@ struct VsOut {
 };
 
 @vertex
-fn vs_main(@builtin(vertex_index) vertex_index: u32,@location(0) position: vec2<f32>,@location(1) size: vec2<f32>, @location(2) radius: f32, @location(3) angle: f32,
-    @location(4) color: vec4<f32>,) -> VsOut {
+fn vs_main(@builtin(vertex_index) vertex_index: u32, input: InstanceInput) -> VsOut {
 
     var out: VsOut;
 
-    let rotated = rotate2d(size * POSITIONS[vertex_index], angle);
-    let pos = (rotated + position) / (view_uniforms.resolution / 2.0) - 1;
+    let rotated = rotate2d(input.size * POSITIONS[vertex_index], input.angle);
+    let pos = (rotated + input.position) / (view_uniforms.resolution / 2.0) - 1;
     out.position = vec4<f32>(pos, 0.0, 1.0);
-    let local = size * POSITIONS[vertex_index];
+    let local = input.size * POSITIONS[vertex_index];
     out.local_pos = local;
-    out.size = size;
-    out.radius = radius;
-    out.color = color;
+    out.size = input.size;
+    out.radius = input.radius;
+    out.color = input.color;
     return out;
 }
 

@@ -24,7 +24,8 @@ impl Renderer {
     pub(crate) fn render(&mut self, instances: &[QuadInstance]) {
         let ws = &self.wgpu;
 
-        // 1. 获取下一帧纹理
+        // 向 Surface 申请一个可以写入的 Back Buffer。
+        // 本帧所有渲染最终都会写入这张纹理。
         let current_surface_texture: CurrentSurfaceTexture = ws.surface.get_current_texture();
         let surface_texture = match current_surface_texture {
             CurrentSurfaceTexture::Success(surface_texture) => surface_texture,
@@ -34,10 +35,13 @@ impl Renderer {
             }
         };
 
-        // 2. 从 SurfaceTexture 中创建 TextureView，并创建指令录制器
+        // 从 SurfaceTexture 中创建 TextureView，TextureView 是 GPU 实际访问 Texture 的入口
         let view = surface_texture
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
+        // 创建指令录制器
+        // CommandEncoder 用于录制 GPU 指令。
+        // 这里只是记录，不会立即执行。
         let mut encoder = ws
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -47,17 +51,28 @@ impl Renderer {
         // 3：开启一个 RenderPass，范围块限制 RenderPass 声明周期
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Clear Screen Pass"),
+                label: Some("Draw Instance Pass"),
+                // 告诉 GPU：
+                // 这次画到哪里？
+                // 通常Surface Texture
+                // 以后阴影会变成：Shadow Map
+                // 后处理会变成HDR：Texture
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
                     resolve_target: None,
                     ops: wgpu::Operations {
+                    // 说明前面的Framebuffer 内容怎么处理，这里选择清除
+                    // Clear：清屏。
+                    // Load：保留已有内容继续绘制。
                         load: wgpu::LoadOp::Clear(wgpu::Color {
                             r: 0.1,
                             g: 0.2,
                             b: 0.9,
                             a: 1.0,
                         }),
+                        // RenderPass 结束后是否保留绘制结果。
+                        // Store：保存。
+                        // Discard：结果可丢弃。
                         store: wgpu::StoreOp::Store,
                     },
                     depth_slice: None,
@@ -68,16 +83,26 @@ impl Renderer {
                 multiview_mask: None,
             });
 
-
+            // 指定后续 draw() 使用哪条渲染管线。
+            // 包括 Shader、Vertex Layout、Blend 等状态。
             render_pass.set_pipeline(&self.pipeline);
+            // 将 BindGroup 绑定到 group=0。
+            // Shader 中 @group(0) 将读取这里绑定的资源。
             render_pass.set_bind_group(0, &self.bind_group, &[]);
+            // 利用GPU 数据上传通道向实例缓冲区写入数据
             ws.queue.write_buffer(&self.instances_buffer, 0, bytemuck::cast_slice(instances));
+           // 指定 Vertex Buffer。
+            // 后续 draw() 时 Vertex Shader 会从这里读取输入。
             render_pass.set_vertex_buffer(0, self.instances_buffer.slice(..));
+            // 让管线将把前6个顶点绘制出来，GPU 会根据管线的描述去组装图元并执行顶点着色器和片段着色器
+            // 每个实例绘制 6 个 Vertex（两个三角形组成一个 Quad）。
+            // 第二个参数表示实例数量。
             render_pass.draw(0..6, 0..(instances.len() as u32));
         }
 
-        // 4：提交并申请重绘
+        // 将录制好的 GPU 指令提交给 GPU 执行。
         ws.queue.submit(std::iter::once(encoder.finish()));
+        // 交换前后台缓冲，将本帧显示到屏幕。
         surface_texture.present();
     }
 
@@ -156,14 +181,22 @@ fn create_pipeline(
     config: &wgpu::SurfaceConfiguration,
 ) -> (RenderPipeline, wgpu::Buffer, BindGroup, wgpu::Buffer) {
     let shader = device.create_shader_module(ShaderModuleDescriptor {
-        label: Some("Blue Square Shader"),
+        label: Some("Sdf Shader"),
         source: ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
     });
 
+    // 声明这一组资源（Group）的接口。
+    // GPU 会根据这里的声明检查 Shader 中 @group/@binding 是否匹配。
     let view_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("View BGL"),
+        // 声明 binding=0 的资源类型。
+        // 必须与 WGSL 中
+        // @group(0) @binding(0)
+        // 的声明保持一致。
         entries: &[wgpu::BindGroupLayoutEntry {
             binding: 0,
+            // 指定哪些 Shader Stage 可以访问。
+            // 这里只允许 Vertex 和 Fragment Shader 使用。
             visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
             ty: wgpu::BindingType::Buffer {
                 ty: wgpu::BufferBindingType::Uniform,
@@ -174,52 +207,78 @@ fn create_pipeline(
         }],
     });
 
+    // CPU 端维护的 Uniform 数据。
+    // 后续会复制到 GPU Buffer。
     let view_uniform = ViewUniform {
         resolution: [config.width as f32, config.height as f32],
         _pad: [0.0, 0.0],
     };
 
+    // 创建 GPU Uniform Buffer，并把刚刚的 CPU 数据上传进去。
     let view_ubo = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("View UBO"),
         contents: bytemuck::bytes_of(&view_uniform),
+        // 指定 Buffer 的用途。
+        // UNIFORM：Shader 可以读取。
+        // COPY_DST：CPU 后续可以继续写入。
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
     });
 
+    // 创建 BindGroup。
+    // 将 GPU Buffer 绑定到 binding=0。
     let view_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("View BG"),
         layout: &view_bgl,
+        // 指定 binding=0 对应哪个 GPU Buffer。
         entries: &[wgpu::BindGroupEntry {
             binding: 0,
             resource: view_ubo.as_entire_binding(),
         }],
     });
 
+    // 声明 Pipeline 使用哪些 BindGroup。
+    // 顺序必须与 Shader 中的 @group(...) 一致。
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("Blue Square Pipeline Layout"),
+        label: Some("Sdf Pipeline Layout"),
         bind_group_layouts: &[Some(&view_bgl)],
         immediate_size: 0,
     });
 
+    // 创建 Render Pipeline。
+    // 描述 GPU 如何完成一次绘制。
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("Blue Square Pipeline"),
+        label: Some("Sdf Pipeline"),
         layout: Some(&pipeline_layout),
+        // 指定顶点着色器及其入口点和编译选项
         vertex: wgpu::VertexState {
             module: &shader,
             entry_point: Some("vs_main"),
             compilation_options: PipelineCompilationOptions::default(),
+            // Vertex Buffer 的解析规则。
+            // GPU 会按照这里解析 QuadInstance。
             buffers: &[QuadInstance::layout()],
         },
+        // 指定片段着色器及其入口点和编译选项
         fragment: Some(wgpu::FragmentState {
             module: &shader,
             entry_point: Some("fs_main"),
             compilation_options: PipelineCompilationOptions::default(),
+            // 最终颜色输出到哪个颜色附件。
             targets: &[Some(wgpu::ColorTargetState {
                 format: config.format,
+                // blend 模式，REPLACE 表示直接覆盖，ALPHA_BLENDING 表示使用 alpha 混合等
                 blend: Some(wgpu::BlendState::REPLACE),
                 write_mask: wgpu::ColorWrites::ALL,
             })],
         }),
         primitive: wgpu::PrimitiveState {
+            // 说明顶点列表如何被解释为图元，TriangleList 表示每三个顶点组成一个三角形，无重叠
+            // draw(6)
+            // 会解释为
+            //
+            // (0,1,2)
+            //
+            // (3,4,5)
             topology: wgpu::PrimitiveTopology::TriangleList,
             strip_index_format: None,
             front_face: wgpu::FrontFace::Ccw,
@@ -234,8 +293,11 @@ fn create_pipeline(
         cache: None,
     });
 
+    // GPU Vertex Buffer。
+    // 每个实例对应一个 QuadInstance。
     let instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("Instance Buffer"),
+        // 预留空间，存储 1000 个实例的数据
         size: 1000 * size_of::<QuadInstance>() as u64,
         usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
