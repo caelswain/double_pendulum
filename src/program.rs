@@ -1,6 +1,9 @@
 use std::sync::Arc;
 
-use crate::{canvas::Canvas, renderer::{QuadInstance, Renderer}};
+use crate::{
+    canvas::Canvas,
+    renderer::{QuadInstance, Renderer},
+};
 use winit::{
     application::ApplicationHandler,
     dpi::{PhysicalSize, Size},
@@ -50,9 +53,7 @@ impl<AppState> ApplicationHandler for Program<AppState> {
                 }
             }
             WindowEvent::RedrawRequested => {
-                (self.update_fn)(&mut self.app_state);
                 self.render();
-                self.window.as_ref().unwrap().request_redraw();
             }
             _ => (),
         }
@@ -60,12 +61,18 @@ impl<AppState> ApplicationHandler for Program<AppState> {
 
     fn about_to_wait(&mut self, _event_loop: &winit::event_loop::ActiveEventLoop) {
         (self.update_fn)(&mut self.app_state);
-        self.window.as_ref().unwrap().request_redraw();
+        if let Some(window) = &self.window {
+            window.request_redraw();
+        }
     }
 }
 
 impl<AppState> Program<AppState> {
-    pub fn new(app_state: AppState, update_fn: UpdateFn<AppState>, render_fn: RenderFn<AppState>) -> Self {
+    pub fn new(
+        app_state: AppState,
+        update_fn: UpdateFn<AppState>,
+        render_fn: RenderFn<AppState>,
+    ) -> Self {
         Self {
             window: None,
             renderer: None,
