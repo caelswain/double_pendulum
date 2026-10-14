@@ -26,7 +26,7 @@ impl Canvas {
         self.instance_list.push(rect);
     }
 
-    pub fn draw_cicle(&mut self, position: [f32;2], radius: f32, angle: f32, color:[f32; 4]) {
+    pub fn draw_circle(&mut self, position: [f32;2], radius: f32, angle: f32, color:[f32; 4]) {
         let rect = QuadInstance::new(position, [radius * 2.0, radius * 2.0], radius, angle, color);
         self.instance_list.push(rect);
     }

@@ -27,11 +27,9 @@ struct PendulumState {
     omega2: f32,
 }
 
-fn derivatives(app: &mut App, state: PendulumState) -> PendulumState {
-    // 时间步长
-    let dt: f32 = app.tick.elapsed().as_secs_f32();
-    app.tick = Instant::now();
-
+/// 只计算状态向量关于时间的导数,不碰计时器、不产生副作用。
+/// 时间步长由调用方（update）统一决定。
+fn derivatives(app: &App, state: PendulumState) -> PendulumState {
     let l1 = app.l1;
     let l2 = app.l2;
     let m1 = app.m1;
@@ -70,8 +68,12 @@ fn add_scaled(state: PendulumState, delta: PendulumState, scale: f32) -> Pendulu
 }
 
 fn update(app: &mut App) {
-    let dt: f32 = app.tick.elapsed().as_secs_f32();
+    // dt 必须"每帧只算一次"：RK4 的 4 个子步共用同一个步长。
+    let raw_dt: f32 = app.tick.elapsed().as_secs_f32();
     app.tick = Instant::now();
+    // 窗口卡顿或首帧时 raw_dt 可能为 0 或很大；双摆是混沌系统，
+    // 步长过大会让积分发散，所以夹紧到一个稳定区间。
+    let dt: f32 = raw_dt.clamp(1.0 / 240.0, 1.0 / 30.0);
 
     let state = PendulumState {
         theta1: app.theta1,
@@ -105,8 +107,8 @@ fn render(app: &App, canvas: &mut Canvas) {
     let y2 = y1 + app.l2 * f32::cos(app.theta2);
     canvas.draw_line([450.0, 300.0], [450.0 + x1, 300.0-y1], 3.0, [0.35, 0.75, 0.65, 1.0]);
     canvas.draw_line([450.0 + x1, 300.0-y1], [450.0 + x2, 300.0-y2], 3.0, [0.35, 0.75, 0.65, 1.0]);
-    canvas.draw_cicle([450.0 + x1, 300.0-y1], 10.0, 0.0, [0.15, 0.55, 0.7, 1.0]);
-    canvas.draw_cicle([450.0 + x2, 300.0-y2], 20.0, 0.0, [0.65, 0.55, 0.45, 1.0]);
+    canvas.draw_circle([450.0 + x1, 300.0-y1], 10.0, 0.0, [0.15, 0.55, 0.7, 1.0]);
+    canvas.draw_circle([450.0 + x2, 300.0-y2], 20.0, 0.0, [0.65, 0.55, 0.45, 1.0]);
 }
 
 fn main() {
