@@ -2,6 +2,9 @@
 name = "double_pendulum"
 version = "0.1.0"
 edition = "2024"
+description = "双摆物理模拟，顺带实验一个把图形统一为 QuadInstance 的 wgpu 2D 渲染框架"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/caelswain/double_pendulum"
 
 [[bin]]
 name = "double_pendulum"
